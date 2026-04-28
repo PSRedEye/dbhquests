@@ -165,12 +165,28 @@ function mergeWrappedTitleLines(lines) {
   return result.filter(l => l.trim() !== "");
 }
 
+/**
+ * Strip a trailing "NN Capital-word…" sidebar suffix from a text snippet.
+ *   "Rakoun plush toy 11 Cow poop"  →  "Rakoun plush toy"
+ *   "p= door pi 02 Bolf - …"        →  "p= door pi"    (still rejected by uppercase check)
+ * This must run BEFORE looksLikeStandaloneTitle so we never evaluate a
+ * sidebar-contaminated string as a single item name.
+ */
+function stripSidebarSuffix(text) {
+  return String(text || "")
+    .replace(/\s+\d{1,2}\s+[A-Z][A-Za-z\s]*$/, "")
+    .trim();
+}
+
 function looksLikeStandaloneTitle(line) {
   const value = String(line || "").trim();
   if (!value || value.length < 4 || value.length > 55) return false;
   if (TITLE_LINE_NOISE_REGEX.test(value)) return false;
   if (value.includes(" - ")) return false;
   if (PRICE_IN_LINE_REGEX.test(value)) return false;
+  // Real item names (plushies, special items) always start with an uppercase letter.
+  // OCR garbage like "p= door pi" or "pis door pi" starts lowercase → reject.
+  if (!/^[A-Z]/.test(value)) return false;
   const words = value.split(/\s+/).filter(Boolean);
   if (words.length < 2 || words.length > 6) return false;
   // Keep phrases like "Rakoun plush toy" but avoid mostly numeric garbage.
@@ -309,18 +325,64 @@ function extractContinuationFromNextLine(lines, index) {
 
 /**
  * Compact key used when comparing items across screenshots.
- * Strips all punctuation and whitespace so minor OCR differences
- * ("rollbar" vs "roll bar", "- " vs "-") still match.
+ * Strips punctuation/whitespace AND applies the same OCR confusion
+ * corrections used elsewhere (0→o, 1/|/!→l, 5→s) so that two reads
+ * of the same card text that differ only in those substitutions still
+ * produce the same key.
  */
 function normalizeForMatch(title) {
   return String(title || "")
     .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
+    .replace(/[|!1]/g, "l")
+    .replace(/0/g, "o")
+    .replace(/5/g, "s")
+    .replace(/[^a-z]/g, "");
+}
+
+/**
+ * Minimal Levenshtein distance between two strings.
+ * Space-optimised O(m·n) — strings here are short so this is fast.
+ */
+function editDistance(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  // Single-row rolling DP
+  let row = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const tmp = row[j];
+      row[j] = a[i - 1] === b[j - 1]
+        ? prev
+        : 1 + Math.min(prev, row[j], row[j - 1]);
+      prev = tmp;
+    }
+  }
+  return row[n];
+}
+
+/**
+ * Two normalised title keys are considered the same card when they are
+ * either identical or within a small edit-distance budget (≤15% of the
+ * longer string, minimum 2).  This absorbs OCR noise that survives the
+ * character-substitution step above.
+ */
+function titlesMatch(a, b) {
+  if (a === b) return true;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return true;
+  const budget = Math.max(2, Math.floor(maxLen * 0.15));
+  return editDistance(a, b) <= budget;
 }
 
 /**
  * Find how many items at the END of listA appear in the same order at the
  * START of listB.  This is the scroll-overlap that should be skipped.
+ *
+ * Uses fuzzy title matching so minor OCR differences between two reads of
+ * the same card (different screenshot, slightly different lighting/position)
+ * don't invalidate the match.
  *
  * Returns 0 when there is no overlap (safe default — nothing is dropped).
  */
@@ -331,17 +393,18 @@ function findOverlapLength(listA, listB) {
   for (let L = maxPossible; L >= 1; L--) {
     const suffixA = keysA.slice(keysA.length - L);
     const prefixB = keysB.slice(0, L);
-    if (suffixA.every((k, i) => k === prefixB[i])) return L;
+    if (suffixA.every((k, i) => titlesMatch(k, prefixB[i]))) return L;
   }
   return 0;
 }
 
 /**
- * Merge per-screenshot item lists, removing the overlapping prefix of each
- * screenshot relative to the one before it.
+ * Merge per-screenshot item lists.
  *
- * Items that happen to re-appear AFTER the overlap boundary (genuine
- * duplicate quests) are intentionally preserved.
+ * Overlap removal is applied ONLY between the last screenshot and the
+ * second-to-last screenshot.  All other screenshots are added in full so
+ * that genuine duplicate quests that happen to share a title across
+ * non-adjacent screenshots are never silently dropped.
  *
  * @param {{ file: string, items: Array }[]} perImage  Chronological order.
  * @returns {{ items: Array, stats: Array }}
@@ -349,26 +412,33 @@ function findOverlapLength(listA, listB) {
 function mergeScreenshotLists(perImage) {
   if (!perImage.length) return { items: [], stats: [] };
 
-  const result = [...perImage[0].items];
-  const stats = [{
-    file:    perImage[0].file,
-    total:   perImage[0].items.length,
-    skipped: 0,
-    added:   perImage[0].items.length
-  }];
+  const result = [];
+  const stats  = [];
 
-  for (let i = 1; i < perImage.length; i++) {
-    const prev = perImage[i - 1].items;
-    const curr = perImage[i].items;
-    const overlap  = findOverlapLength(prev, curr);
-    const newItems = curr.slice(overlap);
-    result.push(...newItems);
+  // ── All screenshots except the last: add every item as-is ────────────────
+  for (let i = 0; i < perImage.length - 1; i++) {
+    result.push(...perImage[i].items);
     stats.push({
       file:    perImage[i].file,
-      total:   curr.length,
-      skipped: overlap,
-      added:   newItems.length
+      total:   perImage[i].items.length,
+      skipped: 0,
+      added:   perImage[i].items.length
     });
+  }
+
+  // ── Last screenshot: compare only against the immediately preceding one ──
+  const last = perImage[perImage.length - 1];
+
+  if (perImage.length === 1) {
+    // Single screenshot — nothing to compare against.
+    result.push(...last.items);
+    stats.push({ file: last.file, total: last.items.length, skipped: 0, added: last.items.length });
+  } else {
+    const secondToLast = perImage[perImage.length - 2];
+    const overlap  = findOverlapLength(secondToLast.items, last.items);
+    const newItems = last.items.slice(overlap);
+    result.push(...newItems);
+    stats.push({ file: last.file, total: last.items.length, skipped: overlap, added: newItems.length });
   }
 
   return { items: result, stats };
@@ -412,6 +482,16 @@ function parseItemsFromText(rawText) {
     titleChunkRegex.lastIndex = 0;
     let titleMatch;
     while ((titleMatch = titleChunkRegex.exec(line)) !== null) {
+      // ── Sidebar filter ────────────────────────────────────────────────────
+      // The game UI shows a numbered scrollable list on one side of the screen
+      // (e.g. "01 Bolf - Front spoiler", "02 Bolf - Front spoiler" …).  These
+      // are active-delivery queue entries, NOT new quest cards.  Tesseract reads
+      // them and the title regex picks up "Bolf - Front spoiler" from each row.
+      // We detect them by the 1–2 digit number that immediately precedes the
+      // model name and skip the match entirely.
+      const textBefore = line.slice(0, titleMatch.index).trim();
+      if (/\d{1,2}$/.test(textBefore)) continue;
+
       const model = titleMatch[1];
       let part = titleMatch[2].trim();
       const firstWord = part.split(/\s+/)[0] || "";
@@ -435,13 +515,17 @@ function parseItemsFromText(rawText) {
       if (title.length >= 5) titleCandidates.push({ value: title, index: lineIndex });
     }
 
-    // Handle titles without a hyphen (for example plushy names) near each card's description line.
-    if (!lineHasDeliver && looksLikeStandaloneTitle(line) && /\bdeliver\b/i.test(lines[lineIndex + 1] || "")) {
-      titleCandidates.push({ value: normalizeTitle(line), index: lineIndex + 0.2 });
+    // Handle titles without a hyphen (e.g. plushie names) near each card's description line.
+    // Strip any trailing "NN Capital…" sidebar suffix before evaluating, so that a line like
+    // "Rakoun plush toy 11 Cow poop" is stored as just "Rakoun plush toy".
+    const lineClean = stripSidebarSuffix(line);
+    if (!lineHasDeliver && looksLikeStandaloneTitle(lineClean) && /\bdeliver\b/i.test(lines[lineIndex + 1] || "")) {
+      titleCandidates.push({ value: normalizeTitle(lineClean), index: lineIndex + 0.2 });
     }
 
     if (lineHasDeliver) {
-      const prefix = line.split(/\bdeliver\b/i)[0].trim();
+      const rawPrefix = line.split(/\bdeliver\b/i)[0].trim();
+      const prefix = stripSidebarSuffix(rawPrefix);
       if (looksLikeStandaloneTitle(prefix)) {
         titleCandidates.push({ value: normalizeTitle(prefix), index: lineIndex - 0.2 });
       }
@@ -474,7 +558,15 @@ function parseItemsFromText(rawText) {
     const sepIndex = title.indexOf(" - ");
     if (sepIndex < 0) return true;
     const model = title.slice(0, sepIndex).trim();
-    const part = title.slice(sepIndex + 3).trim();
+    const part  = title.slice(sepIndex + 3).trim();
+
+    // A real part name always contains at least one letter.
+    // Purely-numeric "parts" (e.g. "Express - 54") are OCR noise from HUD
+    // elements like "HORIZONS EXPRESS" being misread with a garbled suffix.
+    if (!/[a-zA-Z]/.test(part)) return false;
+
+    // Remove directional-only stubs ("Poyopa - Left Rear") when the full
+    // version ("Poyopa - Left Rear Light") is also present.
     if (!isDirectionalOnlyPart(part)) return true;
 
     const prefix = `${model} - ${part} `;

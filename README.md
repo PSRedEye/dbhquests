@@ -101,6 +101,7 @@ These work even when the game is in fullscreen or borderless-window mode.
 | Key | Action |
 |-----|--------|
 | **F8** | Take a full-screen screenshot → save to `ocr-input/` with a timestamp filename |
+| **F9** | Run OCR import — processes all queued screenshots, extracts quest items, and loads them into the checklist (two rising beeps confirm when done) |
 | **F7** | Clear the `ocr-input/` folder (removes screenshots + any leftover `.ocr-raw.txt` files) |
 | **F6** | Show / hide the in-game overlay |
 | **F5** | Toggle **interact mode** ↔ **pass-through** for the overlay (see below) |
@@ -125,14 +126,16 @@ The overlay is a compact translucent panel that sits on top of the game screen a
 
 ### In-game
 1. Open the quest board in the game.
-2. Press **F8** to screenshot the current page (you'll hear a beep).
+2. Press **F8** to screenshot the current page (you'll hear a single beep).
 3. Scroll down and press **F8** again for each page.
 4. Repeat until the whole board is captured.
+5. Press **F9** to run the OCR import straight from the game — no browser needed.  
+   You'll hear **two rising beeps** when the import finishes successfully, or a long low beep if the server isn't reachable.
 
 ### In the web app
 1. Go to `http://localhost:3000`.
 2. The **"Import OCR queue"** button shows a badge with the number of queued screenshots.
-3. Click **"Import OCR queue"** to extract all items via OCR and load them into the checklist.
+3. Click **"Import OCR queue"** to extract all items via OCR and load them into the checklist (or just press **F9** — same action).
 4. When done, click **"Clear OCR queue"** (or press **F7**) to clean up the screenshots for the next session.
 
 > **Note:** When OCR finds at least one valid item, the import overwrites `data/items.json` with the newly extracted items. If no valid items are found, the existing data is kept unchanged.

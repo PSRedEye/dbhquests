@@ -3,11 +3,13 @@
  * Run alongside server.js:  npm run start:all
  *
  *   F8  →  Capture full screen → save to ocr-input/
+ *   F9  →  Run OCR import (process queued screenshots)
  *   F7  →  Clear the ocr-input folder (fresh start for a new session)
  */
 
 const fs   = require("fs/promises");
 const path = require("path");
+const http = require("http");
 const { execFile } = require("child_process");
 
 const { uIOhook, UiohookKey } = require("uiohook-napi");
@@ -15,6 +17,7 @@ const screenshot = require("screenshot-desktop");
 
 const OCR_DIR   = path.join(__dirname, "ocr-input");
 const IMAGE_EXT = /\.(png|jpg|jpeg|bmp|webp|tiff?)$/i;
+const SERVER_URL = "http://localhost:3000";
 
 function pad(n) { return String(n).padStart(2, "0"); }
 
@@ -62,6 +65,44 @@ async function clearFolder() {
   }
 }
 
+async function runOcrImport() {
+  console.log("[F9] Starting OCR import…");
+  beep(1000, 80);
+
+  return new Promise((resolve) => {
+    const req = http.request(
+      `${SERVER_URL}/api/items/import-ocr`,
+      { method: "POST" },
+      (res) => {
+        let body = "";
+        res.on("data", chunk => { body += chunk; });
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(body);
+            const count = (json.items || json.extractedItems || []).length;
+            const scanned = json.imagesScanned || "?";
+            beep(1000, 80);
+            setTimeout(() => beep(1200, 120), 130);
+            console.log(`[F9] ✓ Import done — ${scanned} image(s) scanned, ${count} item(s) loaded`);
+            if ((json.skippedImages || []).length) {
+              console.log(`[F9]   Skipped: ${json.skippedImages.map(s => s.file).join(", ")}`);
+            }
+          } catch {
+            console.log(`[F9] ✓ Import done (raw: ${body.slice(0, 120)})`);
+          }
+          resolve();
+        });
+      }
+    );
+    req.on("error", (err) => {
+      beep(300, 500);
+      console.error(`[F9] ✗ Import failed: ${err.message} — is the server running?`);
+      resolve();
+    });
+    req.end();
+  });
+}
+
 async function main() {
   await fs.mkdir(OCR_DIR, { recursive: true });
   const queued = (await fs.readdir(OCR_DIR)).filter(f => IMAGE_EXT.test(f)).length;
@@ -70,6 +111,7 @@ async function main() {
   console.log("║   DBH Quest Screenshot Tool                  ║");
   console.log("║                                              ║");
   console.log("║   F8  →  Screenshot (add to queue)           ║");
+  console.log("║   F9  →  Run OCR import (process queue)      ║");
   console.log("║   F7  →  Clear OCR folder (new session)      ║");
   console.log("║   Ctrl+C to stop                             ║");
   console.log("╚══════════════════════════════════════════════╝");
@@ -77,6 +119,7 @@ async function main() {
 
   uIOhook.on("keydown", (e) => {
     if (e.keycode === UiohookKey.F8) captureScreen();
+    if (e.keycode === UiohookKey.F9) runOcrImport();
     if (e.keycode === UiohookKey.F7) clearFolder();
   });
 

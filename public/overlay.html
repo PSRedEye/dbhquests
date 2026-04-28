@@ -8,16 +8,16 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:             rgba(12, 10, 24, 0.86);
-      --bg-interact:    rgba(18, 14, 36, 0.96);
-      --border:         rgba(90, 83, 110, 0.55);
-      --border-interact:rgba(255, 0, 200, 0.65);
-      --text:           #e8e4f2;
-      --muted:          #8a84a0;
-      --accent:         #ff00c8;
-      --green:          #28e6a1;
-      --row-hover:      rgba(255, 255, 255, 0.045);
-      --scroll-thumb:   rgba(90, 83, 110, 0.7);
+      --bg:              rgba(12, 10, 24, 0.86);
+      --bg-interact:     rgba(18, 14, 36, 0.96);
+      --border:          rgba(90, 83, 110, 0.55);
+      --border-interact: rgba(255, 0, 200, 0.65);
+      --text:            #e8e4f2;
+      --muted:           #8a84a0;
+      --accent:          #ff00c8;
+      --green:           #28e6a1;
+      --row-hover:       rgba(255, 255, 255, 0.045);
+      --scroll-thumb:    rgba(90, 83, 110, 0.7);
     }
 
     html, body {
@@ -65,6 +65,7 @@
       color: var(--accent);
     }
     .mode-pill {
+      -webkit-app-region: no-drag;
       font-size: 9px;
       font-weight: 700;
       letter-spacing: 0.4px;
@@ -80,6 +81,34 @@
       color: var(--accent);
       border-color: rgba(255,0,200,0.5);
       background: rgba(255,0,200,0.12);
+    }
+
+    /* ── Search bar – only visible in interact mode ──────────────────── */
+    .search-wrap {
+      flex-shrink: 0;
+      display: none;
+      padding: 5px 8px;
+      border-bottom: 1px solid var(--border);
+      -webkit-app-region: no-drag;
+    }
+    .overlay.interactive .search-wrap { display: flex; }
+    .search-input {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(90,83,110,0.5);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 11px;
+      padding: 4px 8px;
+      outline: none;
+      -webkit-user-select: text; user-select: text;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .search-input::placeholder { color: var(--muted); }
+    .search-input:focus {
+      border-color: rgba(255,0,200,0.55);
+      background: rgba(255,0,200,0.07);
     }
 
     /* ── Scrollable list ────────────────────────────────────────────── */
@@ -98,12 +127,12 @@
 
     .item {
       display: flex;
-      align-items: baseline;
-      gap: 6px;
-      padding: 3px 10px;
-      line-height: 1.4;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px 3px 10px;
       border-radius: 4px;
       margin: 0 3px;
+      line-height: 1.4;
     }
     .item:hover { background: var(--row-hover); }
 
@@ -115,7 +144,42 @@
       font-weight: 800;
       color: var(--accent);
     }
+
+    /* ── Custom checkbox – hidden in pass-through, shown in interact ── */
+    .item-cb-wrap {
+      -webkit-app-region: no-drag;
+      flex-shrink: 0;
+      display: none;             /* pass-through: no mouse anyway */
+      align-items: center;
+      justify-content: center;
+      width: 16px; height: 16px;
+      cursor: pointer;
+    }
+    .overlay.interactive .item-cb-wrap { display: flex; }
+
+    .item-cb {
+      appearance: none; -webkit-appearance: none;
+      width: 13px; height: 13px;
+      border: 1.5px solid rgba(138,132,160,0.7);
+      border-radius: 3px;
+      background: rgba(255,255,255,0.04);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: border-color 0.12s, background 0.12s;
+      background-repeat: no-repeat;
+      background-position: center;
+    }
+    .item-cb:hover   { border-color: var(--accent); }
+    .item-cb:checked {
+      border-color: var(--accent);
+      background-color: var(--accent);
+      /* white tick */
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6l3 3 5-5' stroke='white' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    }
+
     .item-name {
+      flex: 1;
+      min-width: 0;
       font-size: 11.5px;
       font-weight: 500;
       color: var(--text);
@@ -162,6 +226,13 @@
       <span class="mode-pill" id="modePill">F5 to scroll</span>
     </div>
 
+    <!-- Search bar: only rendered/visible in interact mode -->
+    <div class="search-wrap">
+      <input class="search-input" id="searchInput"
+             type="text" placeholder="🔍  Search items…"
+             autocomplete="off" spellcheck="false">
+    </div>
+
     <div class="list" id="itemList">
       <div class="state-msg">Loading…</div>
     </div>
@@ -174,52 +245,109 @@
   </div>
 
   <script>
-    const overlay   = document.getElementById("overlay");
-    const itemList  = document.getElementById("itemList");
+    const overlay     = document.getElementById("overlay");
+    const itemList    = document.getElementById("itemList");
     const footerCount = document.getElementById("footerCount");
-    const modePill  = document.getElementById("modePill");
+    const modePill    = document.getElementById("modePill");
+    const searchInput = document.getElementById("searchInput");
 
-    // ── Interaction mode signal from main process ──────────────────────
+    // Full unchecked item list from the last successful fetch
+    let allUnchecked = [];
+
+    // ── Interaction mode signal from Electron main process ────────────
     if (window.electronAPI) {
       window.electronAPI.onInteractionMode((active) => {
         overlay.classList.toggle("interactive", active);
         modePill.classList.toggle("interactive", active);
         modePill.textContent = active ? "✋ SCROLLING" : "F5 to scroll";
+        if (active) {
+          // Slight delay so Electron focus settles before we grab it
+          setTimeout(() => searchInput.focus(), 60);
+        } else {
+          searchInput.value = "";
+          renderItems();
+        }
       });
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────
+    // ── HTML-escape helper ────────────────────────────────────────────
     function esc(s) {
       return String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
     }
 
-    // ── Poll the local server every 4 s ───────────────────────────────
+    // ── Render the list, applying the current search filter ──────────
+    function renderItems() {
+      const q = searchInput.value.trim().toLowerCase();
+      const visible = q
+        ? allUnchecked.filter(i => i.title.toLowerCase().includes(q))
+        : allUnchecked;
+
+      footerCount.textContent =
+        allUnchecked.length ? `${allUnchecked.length} remaining` : "0 remaining";
+
+      if (allUnchecked.length === 0) {
+        itemList.innerHTML = '<div class="state-msg done">✓ All items delivered!</div>';
+        return;
+      }
+      if (visible.length === 0) {
+        itemList.innerHTML = '<div class="state-msg">No match</div>';
+        return;
+      }
+
+      itemList.innerHTML = visible.map((item, idx) => `
+        <div class="item">
+          <span class="item-num">${String(idx + 1).padStart(2, "0")}</span>
+          <label class="item-cb-wrap" title="Mark as delivered">
+            <input class="item-cb" type="checkbox" data-id="${esc(item.id)}">
+          </label>
+          <span class="item-name">${esc(item.title)}</span>
+        </div>
+      `).join("");
+    }
+
+    // ── Mark a single item as delivered ──────────────────────────────
+    async function markSent(id) {
+      try {
+        const res = await fetch("http://localhost:3000/api/items/sent", {
+          method:  "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ updates: [{ id, sent: true }] })
+        });
+        if (!res.ok) throw new Error("bad response");
+      } catch (e) {
+        console.error("[overlay] markSent failed:", e.message);
+      }
+      // Always re-fetch so the overlay stays in sync regardless of errors
+      await refresh();
+    }
+
+    // ── Event delegation: checkbox change ────────────────────────────
+    itemList.addEventListener("change", (e) => {
+      const cb = e.target.closest(".item-cb");
+      if (cb) markSent(cb.dataset.id);
+    });
+
+    // ── Search input wiring ───────────────────────────────────────────
+    searchInput.addEventListener("input",   renderItems);
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { searchInput.value = ""; renderItems(); }
+    });
+
+    // ── Fetch from server, update state, re-render ────────────────────
     async function refresh() {
       try {
         const res  = await fetch("http://localhost:3000/api/items");
         if (!res.ok) throw new Error("bad response");
         const data = await res.json();
-
-        const unchecked = (data.items || []).filter(i => !i.sent);
-        footerCount.textContent = `${unchecked.length} remaining`;
-
-        if (!unchecked.length) {
-          itemList.innerHTML = '<div class="state-msg done">✓ All items delivered!</div>';
-          return;
-        }
-
-        itemList.innerHTML = unchecked.map((item, idx) => `
-          <div class="item">
-            <span class="item-num">${String(idx + 1).padStart(2, "0")}</span>
-            <span class="item-name">${esc(item.title)}</span>
-          </div>
-        `).join("");
-
+        allUnchecked = (data.items || []).filter(i => !i.sent);
+        renderItems();
       } catch {
-        itemList.innerHTML = '<div class="state-msg error">⚠ Server unreachable<br><small>http://localhost:3000</small></div>';
+        itemList.innerHTML =
+          '<div class="state-msg error">⚠ Server unreachable<br><small>http://localhost:3000</small></div>';
         footerCount.textContent = "–";
       }
     }
