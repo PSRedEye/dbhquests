@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quest Overlay</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:             rgba(12, 10, 24, 0.86);
+      --bg-interact:    rgba(18, 14, 36, 0.96);
+      --border:         rgba(90, 83, 110, 0.55);
+      --border-interact:rgba(255, 0, 200, 0.65);
+      --text:           #e8e4f2;
+      --muted:          #8a84a0;
+      --accent:         #ff00c8;
+      --green:          #28e6a1;
+      --row-hover:      rgba(255, 255, 255, 0.045);
+      --scroll-thumb:   rgba(90, 83, 110, 0.7);
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      -webkit-user-select: none; user-select: none;
+    }
+
+    /* ── Main frame ─────────────────────────────────────────────────── */
+    .overlay {
+      width: 100%; height: 100%;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 12px;
+      color: var(--text);
+      transition: border-color 0.18s, background 0.18s;
+    }
+    .overlay.interactive {
+      background: var(--bg-interact);
+      border-color: var(--border-interact);
+    }
+
+    /* ── Header (drag handle) ───────────────────────────────────────── */
+    .header {
+      -webkit-app-region: drag;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 7px 10px 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-title {
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .mode-pill {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: rgba(255,255,255,0.04);
+      transition: color 0.18s, border-color 0.18s, background 0.18s;
+      white-space: nowrap;
+    }
+    .mode-pill.interactive {
+      color: var(--accent);
+      border-color: rgba(255,0,200,0.5);
+      background: rgba(255,0,200,0.12);
+    }
+
+    /* ── Scrollable list ────────────────────────────────────────────── */
+    .list {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 3px 0;
+    }
+    .list::-webkit-scrollbar { width: 3px; }
+    .list::-webkit-scrollbar-track { background: transparent; }
+    .list::-webkit-scrollbar-thumb {
+      background: var(--scroll-thumb);
+      border-radius: 999px;
+    }
+
+    .item {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 3px 10px;
+      line-height: 1.4;
+      border-radius: 4px;
+      margin: 0 3px;
+    }
+    .item:hover { background: var(--row-hover); }
+
+    .item-num {
+      flex-shrink: 0;
+      min-width: 20px;
+      text-align: right;
+      font-size: 10px;
+      font-weight: 800;
+      color: var(--accent);
+    }
+    .item-name {
+      font-size: 11.5px;
+      font-weight: 500;
+      color: var(--text);
+      word-break: break-word;
+      line-height: 1.35;
+    }
+
+    /* ── States ─────────────────────────────────────────────────────── */
+    .state-msg {
+      padding: 18px 12px;
+      font-size: 11px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .state-msg.error { color: #ff6b6b; }
+    .state-msg.done  { color: var(--green); }
+
+    /* ── Footer ─────────────────────────────────────────────────────── */
+    .footer {
+      flex-shrink: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 5px 10px;
+      border-top: 1px solid var(--border);
+    }
+    .footer-count {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .footer-hint {
+      font-size: 9px;
+      color: rgba(138,132,160,0.5);
+      letter-spacing: 0.2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="overlay" id="overlay">
+
+    <div class="header">
+      <span class="header-title">⚙ Quest Items</span>
+      <span class="mode-pill" id="modePill">F5 to scroll</span>
+    </div>
+
+    <div class="list" id="itemList">
+      <div class="state-msg">Loading…</div>
+    </div>
+
+    <div class="footer">
+      <span class="footer-count" id="footerCount">–</span>
+      <span class="footer-hint">F6 hide · F5 interact</span>
+    </div>
+
+  </div>
+
+  <script>
+    const overlay   = document.getElementById("overlay");
+    const itemList  = document.getElementById("itemList");
+    const footerCount = document.getElementById("footerCount");
+    const modePill  = document.getElementById("modePill");
+
+    // ── Interaction mode signal from main process ──────────────────────
+    if (window.electronAPI) {
+      window.electronAPI.onInteractionMode((active) => {
+        overlay.classList.toggle("interactive", active);
+        modePill.classList.toggle("interactive", active);
+        modePill.textContent = active ? "✋ SCROLLING" : "F5 to scroll";
+      });
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    // ── Poll the local server every 4 s ───────────────────────────────
+    async function refresh() {
+      try {
+        const res  = await fetch("http://localhost:3000/api/items");
+        if (!res.ok) throw new Error("bad response");
+        const data = await res.json();
+
+        const unchecked = (data.items || []).filter(i => !i.sent);
+        footerCount.textContent = `${unchecked.length} remaining`;
+
+        if (!unchecked.length) {
+          itemList.innerHTML = '<div class="state-msg done">✓ All items delivered!</div>';
+          return;
+        }
+
+        itemList.innerHTML = unchecked.map((item, idx) => `
+          <div class="item">
+            <span class="item-num">${String(idx + 1).padStart(2, "0")}</span>
+            <span class="item-name">${esc(item.title)}</span>
+          </div>
+        `).join("");
+
+      } catch {
+        itemList.innerHTML = '<div class="state-msg error">⚠ Server unreachable<br><small>http://localhost:3000</small></div>';
+        footerCount.textContent = "–";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 4000);
+  </script>
+</body>
+</html>
+

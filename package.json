@@ -1,0 +1,25 @@
+{
+  "name": "parts-checklist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local persistent checklist for sent car parts.",
+  "scripts": {
+    "start": "concurrently -n server,hotkey,overlay -c cyan,magenta,yellow \"node server.js\" \"node hotkey.js\" \"electron electron-main.js\"",
+    "server": "node server.js",
+    "hotkey": "node hotkey.js",
+    "overlay": "electron electron-main.js"
+  },
+  "dependencies": {
+    "screenshot-desktop": "^1.12.7",
+    "sharp": "^0.34.2",
+    "tesseract.js": "^6.0.1",
+    "uiohook-napi": "^1.5.3"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "electron": "^41.3.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

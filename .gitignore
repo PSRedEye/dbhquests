@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# OCR working folder – screenshots and raw debug text are local only
+ocr-input/
+
+# Tesseract trained data (large binary, user downloads separately)
+*.traineddata
+
+# Data file – contains personal session state, not meant to be shared
+data/items.json
+
+# Electron build output
+dist/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.suo
+*.user
+

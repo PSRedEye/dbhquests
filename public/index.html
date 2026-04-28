@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parts Sent Checklist</title>
+  <style>
+    :root {
+      --bg: #181526;
+      --panel: #242036;
+      --panel-2: #2c2840;
+      --text: #ffffff;
+      --muted: #b9b5c9;
+      --accent: #ff00c8;
+      --green: #28e6a1;
+      --border: #5a536e;
+      --danger: #ff3b3b;
+      --warning: #ffd166;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, Helvetica, sans-serif;
+      background: linear-gradient(135deg, var(--bg), #100e1d);
+      color: var(--text);
+      padding: 14px;
+    }
+    .container { width: min(1180px, 100%); margin: 0 auto; }
+    header, .add-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+    }
+    h1 { margin: 0; font-size: clamp(20px, 3vw, 30px); line-height: 1.1; }
+    h2 { margin: 0; font-size: 17px; }
+    .subtitle { margin: 0; color: var(--muted); line-height: 1.35; font-size: 13px; }
+    .panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .panel-body.collapsed { display: none; }
+    .panel-toggle {
+      border-color: var(--border);
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .panel-toggle:hover { background: rgba(255, 255, 255, 0.07); }
+    .collapsed-search { display: none; margin-bottom: 8px; }
+    .collapsed-search.active { display: block; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .toolbar input[type="search"] { flex: 1; min-width: 160px; }
+    .ocr-badge {
+      font-size: 11px; font-weight: 800;
+      background: var(--accent); color: #000;
+      border-radius: 999px; padding: 1px 6px; margin-left: 4px;
+    }
+    .add-form { display: grid; grid-template-columns: 1fr 200px auto; gap: 8px; }
+    input[type="search"], input[type="text"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 9px 12px;
+      background: var(--panel-2);
+      color: var(--text);
+      outline: none;
+      font-size: 13px;
+    }
+    button {
+      border: 1px solid var(--green);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--green);
+      padding: 9px 12px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button:hover { background: rgba(40, 230, 161, 0.08); }
+    button.danger { border-color: var(--danger); color: var(--danger); }
+    button.danger:hover { background: rgba(255, 59, 59, 0.08); }
+    .status {
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .message { min-height: 18px; margin: 0 0 8px; color: var(--warning); font-weight: 700; font-size: 12px; }
+    .list-header {
+      display: grid;
+      grid-template-columns: 28px 40px 1fr 150px;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px 6px 12px;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      font-size: 12px;
+    }
+    .list-header span:last-child { text-align: right; }
+    ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+    .item-row {
+      background: var(--panel);
+      border: 1px solid rgba(255, 0, 200, 0.45);
+      border-radius: 10px;
+      transition: transform 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+    }
+    .item-row:hover { transform: translateY(-1px); border-color: var(--accent); }
+    .item-row.checked { opacity: 0.62; border-color: rgba(40, 230, 161, 0.55); }
+    .item-row.checked .item-name, .item-row.checked .item-price {
+      text-decoration: line-through;
+      color: var(--muted);
+    }
+    label {
+      display: grid;
+      grid-template-columns: 28px 40px 1fr 150px;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--green); cursor: pointer; }
+    .item-number { color: var(--accent); font-weight: 800; }
+    .item-name { font-size: 14px; font-weight: 700; letter-spacing: 0; }
+    .item-price { font-size: 13px; font-weight: 700; color: var(--accent); text-align: right; }
+    @media (max-width: 820px) {
+      body { padding: 14px; }
+      .toolbar, .add-form { grid-template-columns: 1fr; }
+      button { width: 100%; }
+      .list-header { display: none; }
+      label { grid-template-columns: 28px 42px 1fr; align-items: start; }
+      .item-price { grid-column: 3; text-align: left; margin-top: 2px; }
+      .panel-title { flex-direction: column; align-items: stretch; }
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <header>
+      <div class="panel-title">
+        <h1>Parts Sent Checklist</h1>
+        <button id="toggleSearchPanel" class="panel-toggle" type="button" aria-expanded="true">Collapse search/actions</button>
+      </div>
+      <div id="collapsedSearchWrap" class="collapsed-search">
+        <input id="searchCollapsed" type="search" placeholder="Search parts or prices...">
+      </div>
+      <div id="searchPanelBody" class="panel-body">
+        <p class="subtitle">
+          Data is saved into <strong>data/items.json</strong>. Deleting selected items removes them from that file permanently.
+          Added items are also saved there and stay until you delete them.
+        </p>
+        <p class="subtitle" style="margin-top:5px">
+          <strong>Hotkeys</strong> (start everything with <code style="background:var(--panel-2);padding:1px 5px;border-radius:4px">npm start</code>) —
+          <kbd style="background:var(--panel-2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px">F8</kbd> screenshot quest page ·
+          <kbd style="background:var(--panel-2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px">F7</kbd> clear queue ·
+          <kbd style="background:var(--panel-2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px">F6</kbd> show/hide overlay ·
+          <kbd style="background:var(--panel-2);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px">F5</kbd> scroll overlay
+        </p>
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search parts or prices...">
+          <button id="sortAZ" type="button">Sort A → Z</button>
+          <button id="importOcr" type="button">Import OCR queue</button>
+          <button id="clearOcr" class="danger" type="button" disabled style="opacity:0.4">Clear OCR queue</button>
+          <button id="clearAllItems" class="danger" type="button">Clear all items</button>
+          <button id="checkAll" type="button">Check all visible</button>
+          <button id="uncheckAll" type="button">Uncheck all visible</button>
+          <button id="deleteSelected" class="danger" type="button">Delete selected permanently</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="add-panel">
+      <div class="panel-title">
+        <h2>Add new item</h2>
+        <button id="toggleAddPanel" class="panel-toggle" type="button" aria-expanded="true">Collapse add form</button>
+      </div>
+      <div id="addPanelBody" class="panel-body">
+        <p id="message" class="message"></p>
+        <form id="addForm" class="add-form">
+          <input id="titleInput" type="text" placeholder="Title, e.g. Tucker - Dashboard" autocomplete="off" required>
+          <input id="priceInput" type="text" placeholder="Price, e.g. $517 - $1,033" autocomplete="off" required>
+          <button type="submit">Add item</button>
+        </form>
+      </div>
+    </section>
+
+    <div class="status">
+      <span id="countText">Loading...</span>
+      <span id="visibleText"></span>
+    </div>
+
+    <div class="list-header">
+      <span></span><span>#</span><span>Title</span><span>Price</span>
+    </div>
+
+    <ul id="partsList"></ul>
+  </main>
+
+  <script>
+    const partsList = document.getElementById("partsList");
+    const countText = document.getElementById("countText");
+    const visibleText = document.getElementById("visibleText");
+    const search = document.getElementById("search");
+    const searchCollapsed = document.getElementById("searchCollapsed");
+    const searchPanelBody = document.getElementById("searchPanelBody");
+    const collapsedSearchWrap = document.getElementById("collapsedSearchWrap");
+    const toggleSearchPanel = document.getElementById("toggleSearchPanel");
+    const addPanelBody = document.getElementById("addPanelBody");
+    const toggleAddPanel = document.getElementById("toggleAddPanel");
+    const checkAll = document.getElementById("checkAll");
+    const uncheckAll = document.getElementById("uncheckAll");
+    const clearOcr = document.getElementById("clearOcr");
+    const clearAllItems = document.getElementById("clearAllItems");
+    const sortAZ = document.getElementById("sortAZ");
+    const importOcr = document.getElementById("importOcr");
+    const deleteSelected = document.getElementById("deleteSelected");
+    const addForm = document.getElementById("addForm");
+    const titleInput = document.getElementById("titleInput");
+    const priceInput = document.getElementById("priceInput");
+    const message = document.getElementById("message");
+    let items = [];
+    let searchTerm = "";
+    let isSearchPanelCollapsed = false;
+    let isAddPanelCollapsed = false;
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function normalize(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { "Content-Type": "application/json" },
+        ...options
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Request failed");
+      return payload;
+    }
+
+    async function loadItems() {
+      const payload = await requestJson("/api/items");
+      items = payload.items || [];
+      render();
+    }
+
+    function render() {
+      const term = normalize(searchTerm);
+      const visibleItems = items.filter(item => normalize(`${item.title} ${item.price}`).includes(term));
+
+      partsList.innerHTML = visibleItems.map((item, index) => `
+        <li class="item-row ${item.sent ? "checked" : ""}" data-id="${escapeHtml(item.id)}">
+          <label for="item-${escapeHtml(item.id)}">
+            <input type="checkbox" id="item-${escapeHtml(item.id)}" data-id="${escapeHtml(item.id)}" ${item.sent ? "checked" : ""}>
+            <span class="item-number">${String(index + 1).padStart(2, "0")}</span>
+            <span class="item-name">${escapeHtml(item.title)}</span>
+            <span class="item-price">${escapeHtml(item.price)}</span>
+          </label>
+        </li>
+      `).join("");
+
+      updateStatus(visibleItems.length);
+
+      partsList.querySelectorAll("input[type='checkbox']").forEach(checkbox => {
+        checkbox.addEventListener("change", async () => {
+          const id = checkbox.dataset.id;
+          const item = items.find(currentItem => currentItem.id === id);
+          if (!item) return;
+
+          item.sent = checkbox.checked;
+          checkbox.closest(".item-row").classList.toggle("checked", checkbox.checked);
+          updateStatus(visibleItems.length);
+
+          try {
+            await requestJson("/api/items/sent", {
+              method: "PATCH",
+              body: JSON.stringify({ updates: [{ id, sent: checkbox.checked }] })
+            });
+          } catch (error) {
+            item.sent = !checkbox.checked;
+            showMessage(error.message);
+            render();
+          }
+        });
+      });
+    }
+
+    function updateStatus(visibleCount = items.length) {
+      const checkedCount = items.filter(item => item.sent).length;
+      countText.textContent = `${checkedCount} / ${items.length} checked`;
+      visibleText.textContent = `${visibleCount} visible`;
+    }
+
+    function showMessage(text) {
+      message.textContent = text;
+      if (text) {
+        setTimeout(() => {
+          if (message.textContent === text) message.textContent = "";
+        }, 4000);
+      }
+    }
+
+    function setSearchTerm(value, source) {
+      searchTerm = String(value || "");
+      if (source !== "main") search.value = searchTerm;
+      if (source !== "collapsed") searchCollapsed.value = searchTerm;
+      render();
+    }
+
+    function syncPanelState() {
+      searchPanelBody.classList.toggle("collapsed", isSearchPanelCollapsed);
+      collapsedSearchWrap.classList.toggle("active", isSearchPanelCollapsed);
+      toggleSearchPanel.textContent = isSearchPanelCollapsed ? "Expand search/actions" : "Collapse search/actions";
+      toggleSearchPanel.setAttribute("aria-expanded", String(!isSearchPanelCollapsed));
+
+      addPanelBody.classList.toggle("collapsed", isAddPanelCollapsed);
+      toggleAddPanel.textContent = isAddPanelCollapsed ? "Expand add form" : "Collapse add form";
+      toggleAddPanel.setAttribute("aria-expanded", String(!isAddPanelCollapsed));
+    }
+
+    search.addEventListener("input", () => setSearchTerm(search.value, "main"));
+    searchCollapsed.addEventListener("input", () => setSearchTerm(searchCollapsed.value, "collapsed"));
+
+    toggleSearchPanel.addEventListener("click", () => {
+      isSearchPanelCollapsed = !isSearchPanelCollapsed;
+      syncPanelState();
+      if (isSearchPanelCollapsed) {
+        searchCollapsed.focus();
+      } else {
+        search.focus();
+      }
+    });
+
+    toggleAddPanel.addEventListener("click", () => {
+      isAddPanelCollapsed = !isAddPanelCollapsed;
+      syncPanelState();
+    });
+
+    sortAZ.addEventListener("click", async () => {
+      items.sort((a, b) => String(a.title).localeCompare(String(b.title), undefined, { sensitivity: "base" }));
+      render();
+
+      try {
+        await requestJson("/api/items/reorder", {
+          method: "PUT",
+          body: JSON.stringify({ ids: items.map(item => item.id) })
+        });
+        showMessage("Items sorted A → Z and saved.");
+      } catch {
+        showMessage("Items sorted A → Z (display only — could not persist order).");
+      }
+    });
+
+    importOcr.addEventListener("click", async () => {
+      importOcr.disabled = true;
+      importOcr.textContent = "Importing...";
+
+      try {
+        const payload = await requestJson("/api/items/import-ocr", { method: "POST" });
+        items = payload.items || [];
+        render();
+        showMessage(`OCR import complete: ${payload.imported} item(s) from ${payload.imagesScanned} image(s).`);
+      } catch (error) {
+        showMessage(error.message);
+      } finally {
+        importOcr.disabled = false;
+        refreshOcrStatus();
+      }
+    });
+
+    // ── OCR queue status (badge + clear button) ─────────────────────────────
+    async function refreshOcrStatus() {
+      try {
+        const data = await requestJson("/api/ocr/status");
+        const n = data.count || 0;
+        importOcr.innerHTML = n > 0
+          ? `Import OCR queue <span class="ocr-badge">${n}</span>`
+          : "Import OCR queue";
+        clearOcr.disabled = (n === 0);
+        clearOcr.style.opacity = n === 0 ? "0.4" : "";
+      } catch { /* server not ready */ }
+    }
+    setInterval(refreshOcrStatus, 2500);
+    refreshOcrStatus();
+
+    clearOcr.addEventListener("click", async () => {
+      if (!confirm("Remove all queued screenshots from the ocr-input folder?")) return;
+      try {
+        const data = await requestJson("/api/ocr/clear", { method: "DELETE" });
+        showMessage(`OCR queue cleared — ${data.cleared} file(s) removed.`);
+        refreshOcrStatus();
+      } catch (err) {
+        showMessage(err.message);
+      }
+    });
+
+    clearAllItems.addEventListener("click", async () => {
+      if (!items.length) { showMessage("No items to clear."); return; }
+      if (!confirm(`Permanently delete all ${items.length} item(s) from the list? This cannot be undone.`)) return;
+      try {
+        await requestJson("/api/items/clear-all", { method: "DELETE" });
+        items = [];
+        render();
+        showMessage("All items cleared.");
+      } catch (err) {
+        showMessage(err.message);
+      }
+    });
+
+    checkAll.addEventListener("click", async () => {
+      const term = normalize(searchTerm);
+      const visibleItems = items.filter(item => normalize(`${item.title} ${item.price}`).includes(term));
+      visibleItems.forEach(item => { item.sent = true; });
+      render();
+
+      try {
+        await requestJson("/api/items/sent", {
+          method: "PATCH",
+          body: JSON.stringify({ updates: visibleItems.map(item => ({ id: item.id, sent: true })) })
+        });
+      } catch (error) {
+        showMessage(error.message);
+        await loadItems();
+      }
+    });
+
+    uncheckAll.addEventListener("click", async () => {
+      const term = normalize(searchTerm);
+      const visibleItems = items.filter(item => normalize(`${item.title} ${item.price}`).includes(term));
+      visibleItems.forEach(item => { item.sent = false; });
+      render();
+
+      try {
+        await requestJson("/api/items/sent", {
+          method: "PATCH",
+          body: JSON.stringify({ updates: visibleItems.map(item => ({ id: item.id, sent: false })) })
+        });
+      } catch (error) {
+        showMessage(error.message);
+        await loadItems();
+      }
+    });
+
+    deleteSelected.addEventListener("click", async () => {
+      const selectedIds = items.filter(item => item.sent).map(item => item.id);
+
+      if (!selectedIds.length) {
+        showMessage("No selected items to delete.");
+        return;
+      }
+
+      if (!confirm(`Permanently delete ${selectedIds.length} selected item(s)? This edits data/items.json.`)) return;
+
+      try {
+        const payload = await requestJson("/api/items/delete", {
+          method: "DELETE",
+          body: JSON.stringify({ ids: selectedIds })
+        });
+        items = payload.items || [];
+        render();
+        showMessage(`Deleted ${payload.deleted} item(s).`);
+      } catch (error) {
+        showMessage(error.message);
+      }
+    });
+
+    addForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      const title = titleInput.value.trim();
+      const price = priceInput.value.trim();
+
+      if (!title || !price) {
+        showMessage("Both title and price are required.");
+        return;
+      }
+
+      try {
+        const payload = await requestJson("/api/items", {
+          method: "POST",
+          body: JSON.stringify({ title, price })
+        });
+        items.push(payload.item);
+        items.sort((a, b) => String(a.title).localeCompare(String(b.title), undefined, { sensitivity: "base" }));
+        titleInput.value = "";
+        priceInput.value = "";
+        render();
+        showMessage("Item added and saved.");
+      } catch (error) {
+        showMessage(error.message);
+      }
+    });
+
+    loadItems().catch(error => {
+      showMessage(error.message);
+      countText.textContent = "Could not load items.";
+    });
+
+    syncPanelState();
+  </script>
+</body>
+</html>
