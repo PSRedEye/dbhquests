@@ -303,6 +303,79 @@ function extractContinuationFromNextLine(lines, index) {
   return "";
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Cross-screenshot deduplication
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compact key used when comparing items across screenshots.
+ * Strips all punctuation and whitespace so minor OCR differences
+ * ("rollbar" vs "roll bar", "- " vs "-") still match.
+ */
+function normalizeForMatch(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Find how many items at the END of listA appear in the same order at the
+ * START of listB.  This is the scroll-overlap that should be skipped.
+ *
+ * Returns 0 when there is no overlap (safe default — nothing is dropped).
+ */
+function findOverlapLength(listA, listB) {
+  const keysA = listA.map(item => normalizeForMatch(item.title));
+  const keysB = listB.map(item => normalizeForMatch(item.title));
+  const maxPossible = Math.min(keysA.length, keysB.length);
+  for (let L = maxPossible; L >= 1; L--) {
+    const suffixA = keysA.slice(keysA.length - L);
+    const prefixB = keysB.slice(0, L);
+    if (suffixA.every((k, i) => k === prefixB[i])) return L;
+  }
+  return 0;
+}
+
+/**
+ * Merge per-screenshot item lists, removing the overlapping prefix of each
+ * screenshot relative to the one before it.
+ *
+ * Items that happen to re-appear AFTER the overlap boundary (genuine
+ * duplicate quests) are intentionally preserved.
+ *
+ * @param {{ file: string, items: Array }[]} perImage  Chronological order.
+ * @returns {{ items: Array, stats: Array }}
+ */
+function mergeScreenshotLists(perImage) {
+  if (!perImage.length) return { items: [], stats: [] };
+
+  const result = [...perImage[0].items];
+  const stats = [{
+    file:    perImage[0].file,
+    total:   perImage[0].items.length,
+    skipped: 0,
+    added:   perImage[0].items.length
+  }];
+
+  for (let i = 1; i < perImage.length; i++) {
+    const prev = perImage[i - 1].items;
+    const curr = perImage[i].items;
+    const overlap  = findOverlapLength(prev, curr);
+    const newItems = curr.slice(overlap);
+    result.push(...newItems);
+    stats.push({
+      file:    perImage[i].file,
+      total:   curr.length,
+      skipped: overlap,
+      added:   newItems.length
+    });
+  }
+
+  return { items: result, stats };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function hasKnownPartWord(partText) {
   const words = String(partText || "").toLowerCase().split(/\s+/).filter(Boolean);
   return words.some(word => isPartSuffixWord(word));
@@ -431,7 +504,8 @@ async function listImageFiles(folderPath) {
   const entries = await fs.readdir(folderPath, { withFileTypes: true });
   return entries
     .filter(entry => entry.isFile() && IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
-    .map(entry => path.join(folderPath, entry.name));
+    .map(entry => path.join(folderPath, entry.name))
+    .sort(); // alphabetical = chronological for timestamp-named files
 }
 
 function toChecklistItems(extractedItems) {
@@ -455,10 +529,8 @@ async function extractItemsFromImages(folderPath) {
   }
 
   const worker = await createWorker("eng");
-  const found = [];
+  const perImage = [];      // { file, items } per screenshot in order
   const skippedImages = [];
-  // Accumulate raw OCR text for each image so it can be inspected when titles
-  // are missing or mis-parsed.
   const debugLines = [];
 
   try {
@@ -468,13 +540,13 @@ async function extractItemsFromImages(folderPath) {
         const result = await worker.recognize(preprocessed);
         const rawText = result.data.text || "";
 
-        // Save raw OCR text next to the source image (same folder, .txt extension).
+        // Save raw OCR text next to the source image for debugging.
         const debugPath = imagePath.replace(/\.[^.]+$/, ".ocr-raw.txt");
         await fs.writeFile(debugPath, rawText, "utf8").catch(() => {});
 
         debugLines.push(`=== ${path.basename(imagePath)} ===\n${rawText}\n`);
         const parsed = parseItemsFromText(rawText);
-        found.push(...parsed);
+        perImage.push({ file: path.basename(imagePath), items: parsed });
       } catch (error) {
         skippedImages.push({
           file: path.basename(imagePath),
@@ -484,6 +556,23 @@ async function extractItemsFromImages(folderPath) {
     }
   } finally {
     await worker.terminate();
+  }
+
+  // Merge per-screenshot lists, removing scroll-overlap duplicates between
+  // consecutive screenshots while keeping genuine repeated quests.
+  const { items: found, stats } = mergeScreenshotLists(perImage);
+
+  // Log deduplication stats so the user can verify what was kept/dropped.
+  if (perImage.length > 1) {
+    console.log("[OCR dedup] Cross-screenshot overlap removal:");
+    stats.forEach(s => {
+      if (s.skipped > 0) {
+        console.log(`  ${s.file}: ${s.total} items found, ${s.skipped} overlap removed → ${s.added} added`);
+      } else {
+        console.log(`  ${s.file}: ${s.total} items (no overlap with previous)`);
+      }
+    });
+    console.log(`  Total after dedup: ${found.length} item(s)`);
   }
 
   return {
