@@ -41,6 +41,13 @@ const PART_SUFFIX_WORDS = new Set([
 ]);
 
 const TITLE_LINE_NOISE_REGEX = /\b(deliver|requested|condition|rust|polished|recompense|reward|refuse|accept|to\s+win)\b/i;
+
+// Short OCR fragments that must never start a valid standalone item title.
+// These come from misread delivery-description text ("the" → "Te", "pi" etc.)
+const NOISE_START_WORDS = new Set([
+  "te", "is", "in", "of", "to", "an", "and", "the", "or", "at", "by",
+  "it", "as", "on", "pi", "pis", "pa", "pe", "pu", "po", "p"
+]);
 const PRICE_IN_LINE_REGEX   = /\$?\s*(\d[\d,.' ]{1,10})\s*[-~]\s*[\$%]{0,2}\s*(\d[\d,.' ]{1,10})/;
 const PRICE_IN_LINE_REGEX_G = new RegExp(PRICE_IN_LINE_REGEX.source, "g");
 
@@ -259,6 +266,13 @@ function looksLikeStandaloneTitle(line) {
   // Allow single-word items (e.g. "Dashboard") when they are long enough
   if (words.length < 1 || words.length > 6) return false;
   if (words.length === 1 && value.length < 5) return false;
+  // Reject if the first word is a known noise fragment from OCR delivery text
+  // e.g. "Te door light Light" where "Te" is a misread of "the"
+  if (NOISE_START_WORDS.has(words[0].toLowerCase())) return false;
+  // Reject if the first word is suspiciously short (≤2 chars) and not a
+  // known direction or part suffix word  (avoids "Te …", "Pi …" etc.)
+  const firstNorm = words[0].replace(/[^A-Za-z]/g, "").toLowerCase();
+  if (firstNorm.length <= 2 && !isDirectionWord(firstNorm) && !isPartSuffixWord(firstNorm)) return false;
   const alphaChars = (value.match(/[A-Za-z]/g) || []).length;
   return alphaChars >= Math.ceil(value.length * 0.55);
 }
@@ -551,7 +565,16 @@ function parseItemsFromText(rawText) {
         cleaned = cleanNoiseSuffix(cleaned.trim());        // strip trailing noise tokens (yo, yy…)
         if (cleaned && /^[A-Z]/.test(cleaned)) {
           const words = cleaned.split(/\s+/).filter(Boolean);
-          if (words.length >= 2 && words.length <= 5 && hasKnownPartWord(cleaned)) {
+          const firstNorm = (words[0] || "").replace(/[^A-Za-z]/g, "").toLowerCase();
+          const validFirst = firstNorm.length >= 3
+            || isDirectionWord(firstNorm)
+            || isPartSuffixWord(firstNorm);
+          if (
+            words.length >= 2 && words.length <= 5 &&
+            hasKnownPartWord(cleaned) &&
+            !NOISE_START_WORDS.has(firstNorm) &&
+            validFirst
+          ) {
             titleCandidates.push({ value: normalizeTitle(cleaned), index: lineIndex - 0.1 });
           }
         }
