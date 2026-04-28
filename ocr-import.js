@@ -33,7 +33,9 @@ const PART_SUFFIX_WORDS = new Set([
 const TITLE_LINE_NOISE_REGEX = /\b(deliver|requested|condition|rust|polished|recompense|reward|refuse|accept|to\s+win)\b/i;
 // Allow an optional % before the second number – Tesseract sometimes reads
 // the $ sign in "- $618" as "-%$618" or "-%618".
-const PRICE_IN_LINE_REGEX = /\$?\s*(\d[\d,.' ]{1,10})\s*[-~]\s*[\$%]{0,2}\s*(\d[\d,.' ]{1,10})/;
+const PRICE_IN_LINE_REGEX   = /\$?\s*(\d[\d,.' ]{1,10})\s*[-~]\s*[\$%]{0,2}\s*(\d[\d,.' ]{1,10})/;
+// Pre-compiled global variant used inside per-line loops (avoids repeated RegExp construction).
+const PRICE_IN_LINE_REGEX_G = new RegExp(PRICE_IN_LINE_REGEX.source, "g");
 
 function normalizeWordToken(word) {
   return String(word || "")
@@ -531,7 +533,8 @@ function parseItemsFromText(rawText) {
       }
     }
 
-    const priceInLineRegex = new RegExp(PRICE_IN_LINE_REGEX.source, "g");
+    const priceInLineRegex = PRICE_IN_LINE_REGEX_G;
+    priceInLineRegex.lastIndex = 0;
     let priceMatch;
     while ((priceMatch = priceInLineRegex.exec(line)) !== null) {
       const price = normalizePriceRange(`${priceMatch[1]} - ${priceMatch[2]}`);
@@ -585,7 +588,7 @@ async function preprocessImage(filePath) {
     .grayscale()
     .normalize()
     .sharpen()
-    .modulate({ brightness: 1.08, saturation: 0 })
+    .modulate({ brightness: 1.08 })   // saturation: 0 is redundant after grayscale()
     .resize({ width: 2800, withoutEnlargement: false, fit: "inside" })
     .png()
     .toBuffer();

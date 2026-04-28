@@ -17,6 +17,17 @@ const mimeTypes = {
   ".json": "application/json; charset=utf-8"
 };
 
+// ── Simple async mutex ────────────────────────────────────────────────────────
+// Ensures that read-modify-write operations on items.json are serialised and
+// never interleave, even if multiple requests arrive at the same time.
+let _writeLock = Promise.resolve();
+function withLock(fn) {
+  const next = _writeLock.then(fn, fn);
+  // Make the shared lock-tail never reject so future callers are not blocked.
+  _writeLock = next.then(() => {}, () => {});
+  return next;
+}
+
 async function readItems() {
   try {
     const raw = await fs.readFile(DATA_FILE, "utf-8");
@@ -52,7 +63,7 @@ function parseBody(req) {
     let body = "";
     req.on("data", chunk => {
       body += chunk;
-      if (body.length > 1000000) {
+      if (body.length > 1_000_000) {
         reject(new Error("Request body too large"));
         req.destroy();
       }
@@ -65,6 +76,7 @@ function parseBody(req) {
         reject(new Error("Invalid JSON"));
       }
     });
+    req.on("error", reject);
   });
 }
 
@@ -111,29 +123,32 @@ const server = http.createServer(async (req, res) => {
       if (!title) return sendJson(res, 400, { error: "Title is required." });
       if (!price) return sendJson(res, 400, { error: "Price range is required." });
 
-      const items = await readItems();
-      const item = {
-        id: `item-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
-        title,
-        price,
-        sent: false
-      };
-
-      items.push(item);
-      await writeItems(items);
-      return sendJson(res, 201, { item });
+      return withLock(async () => {
+        const items = await readItems();
+        const item = {
+          id: `item-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`,
+          title,
+          price,
+          sent: false
+        };
+        items.push(item);
+        await writeItems(items);
+        return sendJson(res, 201, { item });
+      });
     }
 
     if (url.pathname === "/api/items/sent" && req.method === "PATCH") {
       const body = await parseBody(req);
       const updates = Array.isArray(body.updates) ? body.updates : [];
-      const items = await readItems();
-      const sentById = new Map(updates.map(update => [String(update.id), Boolean(update.sent)]));
-      const updatedItems = items.map(item =>
-        sentById.has(item.id) ? { ...item, sent: sentById.get(item.id) } : item
-      );
-      await writeItems(updatedItems);
-      return sendJson(res, 200, { items: updatedItems });
+      const sentById = new Map(updates.map(u => [String(u.id), Boolean(u.sent)]));
+      return withLock(async () => {
+        const items = await readItems();
+        const updatedItems = items.map(item =>
+          sentById.has(item.id) ? { ...item, sent: sentById.get(item.id) } : item
+        );
+        await writeItems(updatedItems);
+        return sendJson(res, 200, { items: updatedItems });
+      });
     }
 
     if (url.pathname === "/api/items/delete" && req.method === "DELETE") {
@@ -141,24 +156,29 @@ const server = http.createServer(async (req, res) => {
       const ids = new Set(Array.isArray(body.ids) ? body.ids.map(String) : []);
       if (!ids.size) return sendJson(res, 400, { error: "No items selected for deletion." });
 
-      const items = await readItems();
-      const keptItems = items.filter(item => !ids.has(item.id));
-      await writeItems(keptItems);
-      return sendJson(res, 200, { deleted: items.length - keptItems.length, items: keptItems });
+      return withLock(async () => {
+        const items = await readItems();
+        const keptItems = items.filter(item => !ids.has(item.id));
+        await writeItems(keptItems);
+        return sendJson(res, 200, { deleted: items.length - keptItems.length, items: keptItems });
+      });
     }
 
     if (url.pathname === "/api/items/reorder" && req.method === "PUT") {
       const body = await parseBody(req);
       const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
       if (!ids.length) return sendJson(res, 400, { error: "No ids provided." });
-      const items = await readItems();
-      const byId = new Map(items.map(item => [item.id, item]));
-      const reordered = ids.map(id => byId.get(id)).filter(Boolean);
-      // Append any items whose ids were not included in the list, preserving them.
-      const inList = new Set(ids);
-      items.forEach(item => { if (!inList.has(item.id)) reordered.push(item); });
-      await fs.writeFile(DATA_FILE, JSON.stringify(reordered, null, 2), "utf-8");
-      return sendJson(res, 200, { items: reordered });
+
+      return withLock(async () => {
+        const items = await readItems();
+        const byId = new Map(items.map(item => [item.id, item]));
+        const reordered = ids.map(id => byId.get(id)).filter(Boolean);
+        // Append any items whose ids were not included in the list, preserving them.
+        const inList = new Set(ids);
+        items.forEach(item => { if (!inList.has(item.id)) reordered.push(item); });
+        await fs.writeFile(DATA_FILE, JSON.stringify(reordered, null, 2), "utf-8");
+        return sendJson(res, 200, { items: reordered });
+      });
     }
 
     if (url.pathname === "/api/items/import-ocr" && req.method === "POST") {
@@ -172,14 +192,16 @@ const server = http.createServer(async (req, res) => {
           skippedImages: result.skippedImages
         });
       }
-      await writeItems(result.extractedItems);
-      return sendJson(res, 200, {
-        message: result.message,
-        folder: OCR_INPUT_DIR,
-        imagesScanned: result.imagesScanned,
-        imported: result.extractedItems.length,
-        skippedImages: result.skippedImages,
-        items: result.extractedItems
+      return withLock(async () => {
+        await writeItems(result.extractedItems);
+        return sendJson(res, 200, {
+          message: result.message,
+          folder: OCR_INPUT_DIR,
+          imagesScanned: result.imagesScanned,
+          imported: result.extractedItems.length,
+          skippedImages: result.skippedImages,
+          items: result.extractedItems
+        });
       });
     }
 
@@ -191,8 +213,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === "/api/items/clear-all" && req.method === "DELETE") {
-      await writeItems([]);
-      return sendJson(res, 200, { cleared: true });
+      return withLock(async () => {
+        await writeItems([]);
+        return sendJson(res, 200, { cleared: true });
+      });
     }
 
     if (url.pathname === "/api/ocr/clear" && req.method === "DELETE") {

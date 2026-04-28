@@ -56,6 +56,12 @@ function createWindow() {
   // win.webContents.openDevTools({ mode: "detach" });
 }
 
+function safeSend(channel, ...args) {
+  if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+    win.webContents.send(channel, ...args);
+  }
+}
+
 // ── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   createWindow();
@@ -63,19 +69,19 @@ app.whenReady().then(() => {
   // F6 — toggle overlay visibility
   globalShortcut.register("F6", () => {
     if (!win) return;
-    isVisible = !isVisible;
-    if (isVisible) {
-      win.show();
-    } else {
-      // Exit interact mode when hiding so next show is always pass-through
-      if (isInteract) {
-        isInteract = false;
-        win.setIgnoreMouseEvents(true, { forward: true });
-        win.setFocusable(false);
-        win.webContents.send("interaction-mode", false);
+      isVisible = !isVisible;
+      if (isVisible) {
+        win.show();
+      } else {
+        // Exit interact mode when hiding so next show is always pass-through
+        if (isInteract) {
+          isInteract = false;
+          win.setIgnoreMouseEvents(true, { forward: true });
+          win.setFocusable(false);
+          safeSend("interaction-mode", false);
+        }
+        win.hide();
       }
-      win.hide();
-    }
   });
 
   // F5 — toggle interact (scroll) ↔ pass-through
@@ -90,7 +96,7 @@ app.whenReady().then(() => {
       win.setIgnoreMouseEvents(true, { forward: true });
       win.setFocusable(false);
     }
-    win.webContents.send("interaction-mode", isInteract);
+    safeSend("interaction-mode", isInteract);
   });
 });
 

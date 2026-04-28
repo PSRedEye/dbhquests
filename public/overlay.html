@@ -245,6 +245,8 @@
   </div>
 
   <script>
+    const SERVER_URL  = "http://localhost:3000";
+
     const overlay     = document.getElementById("overlay");
     const itemList    = document.getElementById("itemList");
     const footerCount = document.getElementById("footerCount");
@@ -312,7 +314,7 @@
     // ── Mark a single item as delivered ──────────────────────────────
     async function markSent(id) {
       try {
-        const res = await fetch("http://localhost:3000/api/items/sent", {
+        const res = await fetch(`${SERVER_URL}/api/items/sent`, {
           method:  "PATCH",
           headers: { "Content-Type": "application/json" },
           body:    JSON.stringify({ updates: [{ id, sent: true }] })
@@ -340,7 +342,7 @@
     // ── Fetch from server, update state, re-render ────────────────────
     async function refresh() {
       try {
-        const res  = await fetch("http://localhost:3000/api/items");
+        const res  = await fetch(`${SERVER_URL}/api/items`);
         if (!res.ok) throw new Error("bad response");
         const data = await res.json();
         allUnchecked = (data.items || []).filter(i => !i.sent);

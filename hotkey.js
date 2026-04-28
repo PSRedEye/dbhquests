@@ -19,6 +19,9 @@ const OCR_DIR   = path.join(__dirname, "ocr-input");
 const IMAGE_EXT = /\.(png|jpg|jpeg|bmp|webp|tiff?)$/i;
 const SERVER_URL = "http://localhost:3000";
 
+// Prevent overlapping async operations for each hotkey.
+const busy = { F7: false, F8: false, F9: false };
+
 function pad(n) { return String(n).padStart(2, "0"); }
 
 function timestamp() {
@@ -37,6 +40,8 @@ function beep(freq = 800, ms = 150) {
 }
 
 async function captureScreen() {
+  if (busy.F8) return;
+  busy.F8 = true;
   await fs.mkdir(OCR_DIR, { recursive: true });
   const filename = `screenshot_${timestamp()}.png`;
   try {
@@ -48,10 +53,14 @@ async function captureScreen() {
   } catch (err) {
     beep(300, 500);
     console.error(`[F8] ✗ Failed: ${err.message}`);
+  } finally {
+    busy.F8 = false;
   }
 }
 
 async function clearFolder() {
+  if (busy.F7) return;
+  busy.F7 = true;
   await fs.mkdir(OCR_DIR, { recursive: true });
   try {
     const files = await fs.readdir(OCR_DIR);
@@ -62,10 +71,14 @@ async function clearFolder() {
     console.log(`[F7] ✓ Cleared ${del.length} file(s) from OCR folder.`);
   } catch (err) {
     console.error(`[F7] ✗ Clear failed: ${err.message}`);
+  } finally {
+    busy.F7 = false;
   }
 }
 
 async function runOcrImport() {
+  if (busy.F9) return;
+  busy.F9 = true;
   console.log("[F9] Starting OCR import…");
   beep(1000, 80);
 
@@ -90,6 +103,7 @@ async function runOcrImport() {
           } catch {
             console.log(`[F9] ✓ Import done (raw: ${body.slice(0, 120)})`);
           }
+          busy.F9 = false;
           resolve();
         });
       }
@@ -97,6 +111,7 @@ async function runOcrImport() {
     req.on("error", (err) => {
       beep(300, 500);
       console.error(`[F9] ✗ Import failed: ${err.message} — is the server running?`);
+      busy.F9 = false;
       resolve();
     });
     req.end();
