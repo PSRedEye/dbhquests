@@ -28,14 +28,59 @@ const PART_SUFFIX_WORDS = new Set([
   "trunk",
   "gate",
   "panel",
-  "roof"
+  "roof",
+  // additions
+  "beam",
+  "filter",
+  "bar",
+  "engine",
+  "ladder",
+  "radiator",
+  "seat",
+  "bumper",
 ]);
+
 const TITLE_LINE_NOISE_REGEX = /\b(deliver|requested|condition|rust|polished|recompense|reward|refuse|accept|to\s+win)\b/i;
-// Allow an optional % before the second number – Tesseract sometimes reads
-// the $ sign in "- $618" as "-%$618" or "-%618".
 const PRICE_IN_LINE_REGEX   = /\$?\s*(\d[\d,.' ]{1,10})\s*[-~]\s*[\$%]{0,2}\s*(\d[\d,.' ]{1,10})/;
-// Pre-compiled global variant used inside per-line loops (avoids repeated RegExp construction).
 const PRICE_IN_LINE_REGEX_G = new RegExp(PRICE_IN_LINE_REGEX.source, "g");
+
+// Model names that must never be treated as quest-card car names.
+// These come from persistent HUD elements (HORIZONS EXPRESS score counter)
+// that Tesseract reads as "EXPRESS - 34" etc.
+const BLOCKED_MODEL_NAMES = new Set([
+  "EXPRESS", "HORIZONS", "ACCEPT", "REFUSE", "HOME", "SHOP", "PART", "RECOMPENSE"
+]);
+
+// ─── OCR correction table ────────────────────────────────────────────────────
+// Applied to the raw Tesseract output before any parsing so that every
+// downstream function sees consistent car/part names.
+const OCR_CORRECTIONS = [
+  // Car names
+  [/\bCi8\b/g,       "C18"],
+  [/\bC\|8\b/g,      "C18"],
+  [/\bBonphlac\b/g,  "Bonphliac"],
+  [/\bBonphiac\b/g,  "Bonphliac"],
+  [/\bBonphilac\b/g, "Bonphliac"],
+  // Part names
+  [/\bTalllight\b/gi,  "Taillight"],
+  [/\bTailliaht\b/gi,  "Taillight"],
+  [/\bFiiter\b/gi,     "Filter"],
+  [/\bFiIter\b/gi,     "Filter"],
+  // Capitalisation / shorthand fixes
+  [/\bBOLF\b/g, "Bolf"],
+  // Common OCR misreads for vehicle names
+  [/\bTraller\b/gi, "Trailer"],
+  [/\bTreller\b/gi, "Trailer"],
+];
+
+function applyOcrCorrections(text) {
+  let result = String(text || "");
+  for (const [pattern, replacement] of OCR_CORRECTIONS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 function normalizeWordToken(word) {
   return String(word || "")
@@ -53,7 +98,6 @@ function isDirectionWord(word) {
 function isPartSuffixWord(word) {
   const normalized = normalizeWordToken(word);
   if (PART_SUFFIX_WORDS.has(normalized)) return true;
-  // Common OCR misses for "light" in screenshots.
   return normalized === "liaht" || normalized === "iight" || normalized === "llght";
 }
 
@@ -93,11 +137,9 @@ function normalizePriceRange(rawPrice) {
     .replace(/\s+/g, " ");
   const match = compact.match(/\$?\s*(\d[\d,.' ]{1,10})\s*[-–~]\s*\$?\s*(\d[\d,.' ]{1,10})/);
   if (!match) return null;
-
   const low = toNumber(match[1]);
   const high = toNumber(match[2]);
   if (!low || !high) return null;
-
   return `${formatMoney(low)} - ${formatMoney(high)}`;
 }
 
@@ -180,18 +222,43 @@ function stripSidebarSuffix(text) {
     .trim();
 }
 
+/**
+ * Strip trailing OCR noise tokens from the raw part string extracted from a
+ * title line.  Two passes:
+ *   1. Remove trailing isolated punctuation/symbols (e.g. "\", " or "(a").
+ *   2. Repeatedly strip 1–3 char lowercase tokens that are not real words
+ *      (yo, yy, py, po, a, 7 …).
+ */
+function cleanNoiseSuffix(rawPart) {
+  let s = rawPart.trim();
+  // Pass 1a: strip trailing parenthesised noise like "(a", "(7", "(EF"
+  s = s.replace(/\s*\([A-Za-z0-9]*\)?$/, "").trim();
+  // Pass 1b: strip trailing isolated punctuation/symbols
+  s = s.replace(/[^A-Za-z0-9\s']+$/, "").trim();
+  // Pass 2: repeatedly strip short lowercase/digit noise tokens
+  //   matches: "yo", "yy", "py", "a", "7", "4a", "1a" etc.
+  const noiseRe = /\s+(\d+[a-z]?|[a-z]?\d+|[a-z]{1,3})$/;
+  for (let i = 0; i < 5; i++) {
+    const m = s.match(noiseRe);
+    if (!m) break;
+    const tok = m[1].replace(/\d/g, "").toLowerCase();
+    if (tok && (isPartSuffixWord(tok) || isDirectionWord(tok))) break; // real word – keep
+    s = s.slice(0, s.length - m[0].length).trim();
+  }
+  return s;
+}
+
 function looksLikeStandaloneTitle(line) {
   const value = String(line || "").trim();
   if (!value || value.length < 4 || value.length > 55) return false;
   if (TITLE_LINE_NOISE_REGEX.test(value)) return false;
   if (value.includes(" - ")) return false;
   if (PRICE_IN_LINE_REGEX.test(value)) return false;
-  // Real item names (plushies, special items) always start with an uppercase letter.
-  // OCR garbage like "p= door pi" or "pis door pi" starts lowercase → reject.
   if (!/^[A-Z]/.test(value)) return false;
   const words = value.split(/\s+/).filter(Boolean);
-  if (words.length < 2 || words.length > 6) return false;
-  // Keep phrases like "Rakoun plush toy" but avoid mostly numeric garbage.
+  // Allow single-word items (e.g. "Dashboard") when they are long enough
+  if (words.length < 1 || words.length > 6) return false;
+  if (words.length === 1 && value.length < 5) return false;
   const alphaChars = (value.match(/[A-Za-z]/g) || []).length;
   return alphaChars >= Math.ceil(value.length * 0.55);
 }
@@ -210,9 +277,6 @@ function splitPartAndTail(partRaw) {
     const next = words[i + 1];
     if (!next) continue;
 
-    // Once we have seen a real part-suffix word (e.g. "hood", "door", "light"),
-    // any following word that is NOT itself a direction or part word starts a new
-    // title (handles both "Cow poop" and "rakoun plush toy" regardless of case).
     if (
       seenPartWord &&
       !isDirectionWord(next) &&
@@ -229,96 +293,56 @@ function splitPartAndTail(partRaw) {
   return { part, tail };
 }
 
-function extractContinuationFromNextLine(lines, index) {
-  // Look up to 3 lines ahead so we can skip past a card's description line
-  // ("Deliver the part...") and still find a wrapped title word like "Light".
+/**
+ * Collect all part-suffix continuation words from the line(s) immediately
+ * after `index`.  Returns an ordered array so the caller can pick the word
+ * that corresponds to the column position (anchorIndex) of the item in its row.
+ *
+ * e.g. "\ door Bumper Deliver …"  →  ["door", "Bumper"]
+ *      "Beam Light Wheel Deliver…"  →  ["Beam", "Light", "Wheel"]
+ */
+function collectContinuationWords(lines, index) {
+  const collected = [];
   for (let offset = 1; offset <= 3; offset += 1) {
     let nextLine = String(lines[index + offset] || "").trim();
     if (!nextLine) continue;
+    if (/\brecompense\b|\breward\b|\baccept\b|\brefuse\b/i.test(nextLine)) break;
+    if (PRICE_IN_LINE_REGEX.test(nextLine)) break;
 
-    // Hard stops – reward/price lines belong to a different card card section.
-    if (/\brecompense\b|\breward\b|\baccept\b|\brefuse\b/i.test(nextLine)) return "";
-    if (PRICE_IN_LINE_REGEX.test(nextLine)) return "";
+    // Strip leading non-alpha so "\  door…" is treated as starting with "door"
+    const stripped = nextLine.replace(/^[^A-Za-z]+/, "");
 
-    // Quick win: if the line starts with a part-suffix word it is almost certainly
-    // the wrapped second line of the current card title (e.g. "Light" after "Left Rear").
-    const firstWordMatch = nextLine.match(/^([A-Za-z]{2,20})/);
-    const firstWord = firstWordMatch ? firstWordMatch[1] : "";
-    if (firstWord && isPartSuffixWord(firstWord)) return firstWord;
+    // Scan all words for part-suffix candidates
+    const re = /\b([A-Za-z]{2,20})\b/g;
+    let m;
+    while ((m = re.exec(stripped)) !== null) {
+      if (isPartSuffixWord(m[1])) collected.push(m[1]);
+    }
 
-    // Description lines ("Deliver the part…") don't terminate the search, but
-    // the wrapped title word is often embedded directly inside them.
-    // Two patterns seen in practice:
-    //   Pattern A – word just BEFORE a "Deliver" keyword
-    //     e.g. "pa Deliver … Light Deliver …"  →  parts: "Light"
-    //   Pattern B – word just AFTER a "requested" keyword
-    //     e.g. "Deliver … requested bumper"    →  parts: "bumper"
-    //     e.g. "Deliver … requested Light Deliver …" → "Light"
+    // Also check Pattern C (last word of a Deliver line)
     if (/\bdeliver\b/i.test(nextLine)) {
-      let m;
-      // Pattern A
+      let pm;
       const patA = /\b([A-Za-z]{2,20})\s+[Dd]eliver\b/g;
-      while ((m = patA.exec(nextLine)) !== null) {
-        if (isPartSuffixWord(m[1])) return m[1];
+      while ((pm = patA.exec(nextLine)) !== null) {
+        if (isPartSuffixWord(pm[1]) && !collected.includes(pm[1])) collected.push(pm[1]);
       }
-      // Pattern B
       const patB = /\brequested\s+([A-Za-z]{2,20})\b/g;
-      while ((m = patB.exec(nextLine)) !== null) {
-        if (isPartSuffixWord(m[1])) return m[1];
+      while ((pm = patB.exec(nextLine)) !== null) {
+        if (isPartSuffixWord(pm[1]) && !collected.includes(pm[1])) collected.push(pm[1]);
       }
-      continue; // genuine description, keep looking in next lines
-    }
-
-    // Strip obvious concatenated title chunks like "GTR - Hood" so they don't
-    // confuse the run-detection below.
-    nextLine = nextLine.replace(/\b[A-Z0-9][A-Za-z0-9]{1,16}\s*-\s*[A-Za-z0-9][A-Za-z0-9 '/()]{1,40}/g, " ").trim();
-    if (!nextLine) continue;
-
-    const words = nextLine.match(/[A-Za-z]{2,20}/g) || [];
-    if (!words.length) {
-      // Unrecognisable line – stop looking to avoid walking past card boundary.
-      break;
-    }
-
-    const runs = [];
-    let currentRun = [];
-    let startIndex = -1;
-
-    for (let i = 0; i < words.length; i += 1) {
-      const word = words[i];
-      if (isPartSuffixWord(word) || isDirectionWord(word)) {
-        if (currentRun.length === 0) startIndex = i;
-        currentRun.push(word);
-        if (currentRun.length >= 3) {
-          runs.push({ words: [...currentRun], start: startIndex });
-          currentRun = [];
-          startIndex = -1;
-        }
-      } else if (currentRun.length) {
-        runs.push({ words: [...currentRun], start: startIndex });
-        currentRun = [];
-        startIndex = -1;
+      const patCm = nextLine.match(/\b([A-Za-z]{2,20})\s*$/);
+      if (patCm && isPartSuffixWord(patCm[1]) && !collected.includes(patCm[1])) {
+        collected.push(patCm[1]);
       }
     }
-    if (currentRun.length) runs.push({ words: [...currentRun], start: startIndex });
-    if (!runs.length) {
-      // No direction/part words in this line; it's unrelated content – stop.
-      break;
-    }
 
-    // Prefer runs that contain a concrete part word; tie-break by earlier appearance.
-    runs.sort((a, b) => {
-      const aPart = a.words.some(isPartSuffixWord) ? 1 : 0;
-      const bPart = b.words.some(isPartSuffixWord) ? 1 : 0;
-      if (aPart !== bPart) return bPart - aPart;
-      if (a.words.length !== b.words.length) return b.words.length - a.words.length;
-      return a.start - b.start;
-    });
-
-    return runs[0].words.join(" ");
+    if (collected.length > 0) break; // found words on this line — stop early
   }
+  return collected;
+}
 
-  return "";
+function extractContinuationFromNextLine(lines, index) {
+  return collectContinuationWords(lines, index)[0] || "";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,12 +444,7 @@ function mergeScreenshotLists(perImage) {
   // ── All screenshots except the last: add every item as-is ────────────────
   for (let i = 0; i < perImage.length - 1; i++) {
     result.push(...perImage[i].items);
-    stats.push({
-      file:    perImage[i].file,
-      total:   perImage[i].items.length,
-      skipped: 0,
-      added:   perImage[i].items.length
-    });
+    stats.push({ file: perImage[i].file, total: perImage[i].items.length, skipped: 0, added: perImage[i].items.length });
   }
 
   // ── Last screenshot: compare only against the immediately preceding one ──
@@ -460,69 +479,131 @@ function isDirectionalOnlyPart(partText) {
 }
 
 function parseItemsFromText(rawText) {
-  const text = String(rawText || "")
+  // Apply OCR corrections first so all downstream code sees clean text
+  const text = applyOcrCorrections(String(rawText || ""))
     .replace(/\r/g, "")
     .replace(/[|]/g, "I")
     .replace(/[—–]/g, "-");
-  // Pre-merge: stitch title words that OCR placed on a separate line back onto
-  // the line where the title started (handles "UAZ -\nDashboard" and
-  // "Left Rear\nLight" type wrapping).
+
   const lines = mergeWrappedTitleLines(
     text.split("\n").map(line => line.trim()).filter(Boolean)
   );
   const titleCandidates = [];
   const priceCandidates = [];
 
-  // Matches multiple title chunks on one OCR line, e.g. "A - B C - D".
-  const titleChunkRegex = /([A-Z0-9][A-Za-z0-9]{1,16})\s*-\s*([A-Za-z0-9][A-Za-z0-9 '/()]{1,60}?)(?=\s+[A-Z0-9][A-Za-z0-9]{1,16}\s*-\s*|$)/g;
-  const noisePrefixRegex = /^(Deliver|Refuse|Accept|Recompense|Rcompense|Reward|Color|And|ToWin|Town)$/i;
+  /**
+   * MODEL_ANCHOR_REGEX: finds every "ModelName - " anchor in a line.
+   * Using a position-based approach (slice between anchors) rather than a
+   * greedy regex with lookahead so the LAST item in a 3-column row is never
+   * silently dropped.
+   */
+  const MODEL_ANCHOR_REGEX = /([A-Z][A-Za-z0-9']{2,16})\s*-\s*/g;
+  const noisePrefixRegex   = /^(Deliver|Refuse|Accept|Recompense|Rcompense|Reward|Color|And|ToWin|Town)$/i;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex];
-
     const lineHasDeliver = /\bdeliver\b/i.test(line);
-    titleChunkRegex.lastIndex = 0;
-    let titleMatch;
-    while ((titleMatch = titleChunkRegex.exec(line)) !== null) {
-      // ── Sidebar filter ────────────────────────────────────────────────────
-      // The game UI shows a numbered scrollable list on one side of the screen
-      // (e.g. "01 Bolf - Front spoiler", "02 Bolf - Front spoiler" …).  These
-      // are active-delivery queue entries, NOT new quest cards.  Tesseract reads
-      // them and the title regex picks up "Bolf - Front spoiler" from each row.
-      // We detect them by the 1–2 digit number that immediately precedes the
-      // model name and skip the match entirely.
-      const textBefore = line.slice(0, titleMatch.index).trim();
-      if (/\d{1,2}$/.test(textBefore)) continue;
 
-      const model = titleMatch[1];
-      let part = titleMatch[2].trim();
-      const firstWord = part.split(/\s+/)[0] || "";
+    // ── Price candidates ─────────────────────────────────────────────────
+    const priceRegex = PRICE_IN_LINE_REGEX_G;
+    priceRegex.lastIndex = 0;
+    let priceMatch;
+    while ((priceMatch = priceRegex.exec(line)) !== null) {
+      const price = normalizePriceRange(`${priceMatch[1]} - ${priceMatch[2]}`);
+      if (price) {
+        // Filter out garbage prices from decorative "A. 4 A _4" spacing lines.
+        // All real quest prices start at $100+.
+        const lowVal = toNumber(price.split(" - ")[0]);
+        if (lowVal >= 50) priceCandidates.push({ value: price, index: lineIndex });
+      }
+    }
+
+    // ── Skip delivery / price description lines for title extraction ─────
+    if (lineHasDeliver || /\brecompense\b|\breward\b/i.test(line)) continue;
+
+    // ── Title candidates: find every "Model - " anchor, slice between them ─
+    MODEL_ANCHOR_REGEX.lastIndex = 0;
+    const anchors = [];
+    let am;
+    while ((am = MODEL_ANCHOR_REGEX.exec(line)) !== null) {
+      // Blocked model names: HUD elements like "HORIZONS EXPRESS - 34"
+      if (BLOCKED_MODEL_NAMES.has(am[1].toUpperCase())) continue;
+      // Sidebar filter: real sidebar queue entries are preceded by a 2-digit
+      // number (01–21).  Single stray digits from card-border OCR noise must
+      // NOT trigger this filter, so we require exactly 2 consecutive digits.
+      const textBefore = line.slice(0, am.index).trim();
+      if (/\b\d{2}$/.test(textBefore)) continue;
+      anchors.push({ matchIndex: am.index, partStart: am.index + am[0].length, model: am[1] });
+    }
+
+    for (let ai = 0; ai < anchors.length; ai++) {
+      // ── Pre-anchor text: item whose car name OCR failed to read ──────────
+      // e.g. "y- ™ Right rear light yo ~\ Bonphlac - Air Filter …"
+      // The "Right rear light" before the first "Model -" has no car prefix.
+      if (ai === 0 && anchors[0].matchIndex > 0) {
+        const raw = line.slice(0, anchors[0].matchIndex);
+        let cleaned = raw.trim();
+        // Strip leading OCR card-border noise: lowercase char(s) followed by noise connectors
+        // e.g. "y- ™ Right…" → strips "y- ™ " → "Right…"
+        cleaned = cleaned.replace(/^[a-z]{1,3}[-\s/\\~]+/, "");
+        cleaned = cleaned.replace(/^[^A-Za-z]+/, "");    // strip remaining leading non-alpha
+        cleaned = cleaned.replace(/[^A-Za-z\s]+\s*$/, ""); // strip trailing non-alpha (e.g. ~\)
+        cleaned = cleanNoiseSuffix(cleaned.trim());        // strip trailing noise tokens (yo, yy…)
+        if (cleaned && /^[A-Z]/.test(cleaned)) {
+          const words = cleaned.split(/\s+/).filter(Boolean);
+          if (words.length >= 2 && words.length <= 5 && hasKnownPartWord(cleaned)) {
+            titleCandidates.push({ value: normalizeTitle(cleaned), index: lineIndex - 0.1 });
+          }
+        }
+      }
+      const { model, partStart, matchIndex } = anchors[ai];
+      const nextAnchorIdx = anchors[ai + 1]?.matchIndex ?? line.length;
+
+      // Extract raw part text between this anchor and the next (or EOL)
+      let rawPart = line.slice(partStart, nextAnchorIdx).trim();
+
+      // Clean noise suffix (yo, yy, py, (a, etc.)
+      rawPart = cleanNoiseSuffix(rawPart);
+
+      const firstWord = (rawPart.split(/\s+/)[0] || "");
       if (noisePrefixRegex.test(firstWord)) continue;
 
-      const partSplit = splitPartAndTail(part);
-      part = partSplit.part;
+      const partSplit = splitPartAndTail(rawPart);
+      let part = cleanNoiseSuffix(partSplit.part);
 
-      if (looksLikeStandaloneTitle(partSplit.tail)) {
-        titleCandidates.push({ value: normalizeTitle(partSplit.tail), index: lineIndex + 0.1 });
+      // Standalone title hidden in the tail (e.g. "Dashboard" after "Bolf - Tire").
+      // Strip leading non-alphanum AND leading lowercase noise words (e.g. "py ", 'a ')
+      // before the real capitalised title — apply in two sweeps.
+      const cleanTail = partSplit.tail
+        .replace(/^[^A-Za-z0-9]+/, "")  // sweep 1: strip leading symbols
+        .replace(/^[a-z0-9]+\s+/, "")   // sweep 2: strip leading lowercase/digit noise word
+        .replace(/^[^A-Za-z0-9]+/, "")  // sweep 3: strip any symbols revealed by sweep 2
+        .trim();
+      if (looksLikeStandaloneTitle(cleanTail)) {
+        titleCandidates.push({ value: normalizeTitle(cleanTail), index: lineIndex + 0.1 });
       }
 
-      const partWords = part.split(/\s+/);
-      const lastWord = partWords[partWords.length - 1] || "";
-      if (isDirectionWord(lastWord)) {
-        const continuation = extractContinuationFromNextLine(lines, lineIndex);
-        if (continuation) part = `${part} ${continuation}`;
+      // Continuation: trigger when part ends with a direction word OR has no
+      // known part suffix word yet (e.g. "High", "Steering", "Driver's", "Armored").
+      // Use position-aware lookup so each column in a 3-column row gets its own
+      // continuation word (avoids "door" being reused for all 3 items).
+      const lastWord = (part.split(/\s+/).pop() || "");
+      if (isDirectionWord(lastWord) || !hasKnownPartWord(part)) {
+        const continuations = collectContinuationWords(lines, lineIndex);
+        const continuation = continuations[ai] ?? continuations[0] ?? "";
+        if (continuation) part = `${part} ${continuation}`.trim();
       }
 
       const title = normalizeTitle(`${model} - ${part}`);
       if (title.length >= 5) titleCandidates.push({ value: title, index: lineIndex });
     }
 
-    // Handle titles without a hyphen (e.g. plushie names) near each card's description line.
-    // Strip any trailing "NN Capital…" sidebar suffix before evaluating, so that a line like
-    // "Rakoun plush toy 11 Cow poop" is stored as just "Rakoun plush toy".
+    // ── Standalone titles (no hyphen) e.g. "Dashboard", "Funny rock" ────
     const lineClean = stripSidebarSuffix(line);
-    if (!lineHasDeliver && looksLikeStandaloneTitle(lineClean) && /\bdeliver\b/i.test(lines[lineIndex + 1] || "")) {
-      titleCandidates.push({ value: normalizeTitle(lineClean), index: lineIndex + 0.2 });
+    if (!line.includes(" - ") && looksLikeStandaloneTitle(lineClean)) {
+      if (/\bdeliver\b/i.test(lines[lineIndex + 1] || "")) {
+        titleCandidates.push({ value: normalizeTitle(lineClean), index: lineIndex + 0.2 });
+      }
     }
 
     if (lineHasDeliver) {
@@ -531,14 +612,6 @@ function parseItemsFromText(rawText) {
       if (looksLikeStandaloneTitle(prefix)) {
         titleCandidates.push({ value: normalizeTitle(prefix), index: lineIndex - 0.2 });
       }
-    }
-
-    const priceInLineRegex = PRICE_IN_LINE_REGEX_G;
-    priceInLineRegex.lastIndex = 0;
-    let priceMatch;
-    while ((priceMatch = priceInLineRegex.exec(line)) !== null) {
-      const price = normalizePriceRange(`${priceMatch[1]} - ${priceMatch[2]}`);
-      if (price) priceCandidates.push({ value: price, index: lineIndex });
     }
   }
 
@@ -583,12 +656,11 @@ function parseItemsFromText(rawText) {
 }
 
 async function preprocessImage(filePath) {
-  // Slight upscaling + grayscale helps OCR accuracy for compact card text.
   return sharp(filePath)
     .grayscale()
     .normalize()
     .sharpen()
-    .modulate({ brightness: 1.08 })   // saturation: 0 is redundant after grayscale()
+    .modulate({ brightness: 1.08 })
     .resize({ width: 2800, withoutEnlargement: false, fit: "inside" })
     .png()
     .toBuffer();
@@ -600,7 +672,7 @@ async function listImageFiles(folderPath) {
   return entries
     .filter(entry => entry.isFile() && IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
     .map(entry => path.join(folderPath, entry.name))
-    .sort(); // alphabetical = chronological for timestamp-named files
+    .sort();
 }
 
 function toChecklistItems(extractedItems) {
@@ -624,7 +696,7 @@ async function extractItemsFromImages(folderPath) {
   }
 
   const worker = await createWorker("eng");
-  const perImage = [];      // { file, items } per screenshot in order
+  const perImage = [];
   const skippedImages = [];
   const debugLines = [];
 
@@ -635,7 +707,6 @@ async function extractItemsFromImages(folderPath) {
         const result = await worker.recognize(preprocessed);
         const rawText = result.data.text || "";
 
-        // Save raw OCR text next to the source image for debugging.
         const debugPath = imagePath.replace(/\.[^.]+$/, ".ocr-raw.txt");
         await fs.writeFile(debugPath, rawText, "utf8").catch(() => {});
 
@@ -653,8 +724,6 @@ async function extractItemsFromImages(folderPath) {
     await worker.terminate();
   }
 
-  // Merge per-screenshot lists, removing scroll-overlap duplicates between
-  // consecutive screenshots while keeping genuine repeated quests.
   const { items: found, stats } = mergeScreenshotLists(perImage);
 
   // Log deduplication stats so the user can verify what was kept/dropped.
