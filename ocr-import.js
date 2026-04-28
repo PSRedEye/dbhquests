@@ -326,19 +326,27 @@ function collectContinuationWords(lines, index) {
     // Strip leading non-alpha so "\  door…" is treated as starting with "door"
     const stripped = nextLine.replace(/^[^A-Za-z]+/, "");
 
-    // Scan all words for part-suffix candidates
-    const re = /\b([A-Za-z]{2,20})\b/g;
-    let m;
-    while ((m = re.exec(stripped)) !== null) {
-      if (isPartSuffixWord(m[1])) collected.push(m[1]);
+    // Scan for part-suffix words, also capturing a preceding direction word
+    // so that e.g. "Gis Right Turnsignal" → "Right Turnsignal" (not just "Turnsignal")
+    const words = stripped.split(/\s+/).filter(w => /^[A-Za-z]{2,20}$/.test(w));
+    for (let wi = 0; wi < words.length; wi++) {
+      if (isPartSuffixWord(words[wi])) {
+        const prefix = (wi > 0 && isDirectionWord(words[wi - 1])) ? words[wi - 1] + " " : "";
+        collected.push(prefix + words[wi]);
+      }
     }
 
     // Also check Pattern C (last word of a Deliver line)
     if (/\bdeliver\b/i.test(nextLine)) {
       let pm;
-      const patA = /\b([A-Za-z]{2,20})\s+[Dd]eliver\b/g;
+      // Pattern A – "(direction )? partSuffix  Deliver"
+      const patA = /\b(?:([A-Za-z]{2,20})\s+)?([A-Za-z]{2,20})\s+[Dd]eliver\b/g;
       while ((pm = patA.exec(nextLine)) !== null) {
-        if (isPartSuffixWord(pm[1]) && !collected.includes(pm[1])) collected.push(pm[1]);
+        if (isPartSuffixWord(pm[2])) {
+          const prefix = (pm[1] && isDirectionWord(pm[1])) ? pm[1] + " " : "";
+          const phrase = prefix + pm[2];
+          if (!collected.includes(phrase)) collected.push(phrase);
+        }
       }
       const patB = /\brequested\s+([A-Za-z]{2,20})\b/g;
       while ((pm = patB.exec(nextLine)) !== null) {
